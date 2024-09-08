@@ -1,0 +1,102 @@
+use deno_core::{
+    error::AnyError,
+    resolve_path,
+    JsRuntime,
+    RuntimeOptions,
+    op,
+    OpState,
+};
+use serde::{Deserialize, Serialize};
+use serde_json;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Person {
+    name: String,
+    age: u8,
+}
+
+fn main() -> Result<(), serde_json::Error> {
+    let person = Person {
+        name: String::from("Alice"),
+        age: 30,
+    };
+
+    // Serialize the person to a JSON string
+    let json = serde_json::to_string(&person)?;
+    println!("Serialized: {}", json);
+
+    // Deserialize the JSON string back to a Person object
+    let deserialized_person: Person = serde_json::from_str(&json)?;
+    println!("Deserialized: {:?}", deserialized_person);
+
+    Ok(())
+}
+
+use std::env;
+use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio;
+use std::fmt::Write; // For manual string formatting
+
+// Function to get a simple timestamp.
+fn get_timestamp() -> String {
+    let now = SystemTime::now();
+    let duration = now.duration_since(UNIX_EPOCH).expect("Time went backwards");
+    let secs = duration.as_secs();
+    let millis = duration.subsec_millis(); // Get milliseconds part
+
+    // Format timestamp as seconds.milliseconds
+    let mut timestamp = String::new();
+    write!(&mut timestamp, "{}.{:03}", secs, millis).expect("Failed to format time");
+    timestamp
+}
+
+// Define custom logging operations.
+#[op]
+fn op_console_debug(state: &mut OpState, msg: String) -> Result<(), AnyError> {
+    if env::var("DEBUG").is_ok() {
+        println!("[DEBUG] {}: {}", get_timestamp(), msg);
+    }
+    Ok(())
+}
+
+#[op]
+fn op_console_warn(state: &mut OpState, msg: String) -> Result<(), AnyError> {
+    println!("\x1b[33m[WARN] {}: {}\x1b[0m", get_timestamp(), msg);
+    Ok(())
+}
+
+#[op]
+fn op_console_error(state: &mut OpState, msg: String) -> Result<(), AnyError> {
+    println!("\x1b[31m[ERROR] {}: {}\x1b[0m", get_timestamp(), msg);
+    Ok(())
+}
+
+async fn run_js(file_path: &str) -> Result<(), AnyError> {
+    let main_module = resolve_path(file_path, env::current_dir()?.as_path())?;
+
+    let mut js_runtime = JsRuntime::new(RuntimeOptions {
+        module_loader: Some(Rc::new(FsModuleLoader)),
+        ops: vec![
+            op_console_debug::decl(),
+            op_console_warn::decl(),
+            op_console_error::decl(),
+        ],
+        ..Default::default()
+    });
+
+    let mod_id = js_runtime.load_main_es_module(&main_module).await?;
+    let result = js_runtime.mod_evaluate(mod_id);
+
+    js_runtime
+        .run_event_loop()
+        .await?;
+    result.await
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run_js("./example.js").await {
+        eprintln!("error: {:?}", error);
+    }
+}
